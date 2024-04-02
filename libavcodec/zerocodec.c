@@ -39,7 +39,7 @@ static int zerocodec_decode_frame(AVCodecContext *avctx, void *data,
     int i, j, zret, ret;
 
     if (avpkt->flags & AV_PKT_FLAG_KEY) {
-        pic->key_frame = 1;
+        pic->flags |= AV_FRAME_FLAG_KEY;
         pic->pict_type = AV_PICTURE_TYPE_I;
     } else {
         if (!prev) {
@@ -49,7 +49,7 @@ static int zerocodec_decode_frame(AVCodecContext *avctx, void *data,
 
         prev += (avctx->height - 1) * prev_pic->linesize[0];
 
-        pic->key_frame = 0;
+        pic->flags &= ~AV_FRAME_FLAG_KEY;
         pic->pict_type = AV_PICTURE_TYPE_P;
     }
 

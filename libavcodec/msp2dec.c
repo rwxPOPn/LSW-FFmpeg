@@ -48,7 +48,7 @@ static int msp2_decode_frame(AVCodecContext *avctx,
         return ret;
 
     p->pict_type = AV_PICTURE_TYPE_I;
-    p->key_frame = 1;
+    p->flags |= AV_FRAME_FLAG_KEY;
 
     bytestream2_init(&idx, buf, 2 * avctx->height);
     buf += 2 * avctx->height;

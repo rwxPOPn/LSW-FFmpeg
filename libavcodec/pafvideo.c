@@ -295,10 +295,10 @@ static int paf_video_decode(AVCodecContext *avctx, void *data,
     if (code & 0x20) {  // frame is keyframe
         memset(c->pic->data[1], 0, AVPALETTE_SIZE);
         c->current_frame  = 0;
-        c->pic->key_frame = 1;
+        c->pic->flags |= AV_FRAME_FLAG_KEY;
         c->pic->pict_type = AV_PICTURE_TYPE_I;
     } else {
-        c->pic->key_frame = 0;
+        c->pic->flags &= ~AV_FRAME_FLAG_KEY;
         c->pic->pict_type = AV_PICTURE_TYPE_P;
     }
 

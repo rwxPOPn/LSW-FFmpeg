@@ -500,7 +500,7 @@ static int sga_decode_frame(AVCodecContext *avctx, void *data,
     memcpy(frame->data[1], s->pal, AVPALETTE_SIZE);
     frame->palette_has_changed = 1;
     frame->pict_type = AV_PICTURE_TYPE_I;
-    frame->key_frame = 1;
+    frame->flags |= AV_FRAME_FLAG_KEY;
 
     *got_frame = 1;
 

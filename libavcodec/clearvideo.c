@@ -529,7 +529,7 @@ static int clv_decode_frame(AVCodecContext *avctx, void *data,
         if ((ret = ff_reget_buffer(avctx, c->pic, 0)) < 0)
             return ret;
 
-        c->pic->key_frame = 1;
+        c->pic->flags |= AV_FRAME_FLAG_KEY;
         c->pic->pict_type = AV_PICTURE_TYPE_I;
 
         bytestream2_get_be32(&gb); // frame size;
@@ -633,7 +633,7 @@ static int clv_decode_frame(AVCodecContext *avctx, void *data,
         }
         extend_edges(c->pic, c->tile_size);
 
-        c->pic->key_frame = 0;
+        c->pic->flags &= ~AV_FRAME_FLAG_KEY;
         c->pic->pict_type = AV_PICTURE_TYPE_P;
     }
 

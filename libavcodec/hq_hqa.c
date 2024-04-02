@@ -353,7 +353,7 @@ static int hq_hqa_decode_frame(AVCodecContext *avctx, void *data,
         return ret;
     }
 
-    pic->key_frame = 1;
+    pic->flags |= AV_FRAME_FLAG_KEY;
     pic->pict_type = AV_PICTURE_TYPE_I;
 
     *got_frame = 1;

@@ -56,7 +56,7 @@ static int m101_decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
     if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
         return ret;
     frame->pict_type = AV_PICTURE_TYPE_I;
-    frame->key_frame = 1;
+    frame->flags |= AV_FRAME_FLAG_KEY;
 
     stride = AV_RL32(avctx->extradata + 5*4);
 

@@ -422,11 +422,11 @@ static int decode_frame(AVCodecContext *avctx, void *data,
 
     switch (type) {
     case 0x19781977:
-        frame->key_frame = 1;
+        frame->flags |= AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_I;
         break;
     case 0x12250926:
-        frame->key_frame = 0;
+        frame->flags &= ~AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_P;
         break;
     default:
@@ -436,7 +436,7 @@ static int decode_frame(AVCodecContext *avctx, void *data,
 
     if (avctx->width  != width ||
         avctx->height != height) {
-        if (!frame->key_frame) {
+        if (!(frame->flags & AV_FRAME_FLAG_KEY)) {
             av_log(avctx, AV_LOG_ERROR, "Frame size change is unsupported.\n");
             return AVERROR_INVALIDDATA;
         }
@@ -447,10 +447,10 @@ static int decode_frame(AVCodecContext *avctx, void *data,
     if (ret < 0)
         return ret;
 
-    if ((ret = ff_get_buffer(avctx, frame, frame->key_frame ? AV_GET_BUFFER_FLAG_REF : 0)) < 0)
+    if ((ret = ff_get_buffer(avctx, frame, (frame->flags & AV_FRAME_FLAG_KEY) ? AV_GET_BUFFER_FLAG_REF : 0)) < 0)
         return ret;
 
-    if (frame->key_frame) {
+    if (frame->flags & AV_FRAME_FLAG_KEY) {
         ret = decode_intra(avctx, gb, frame);
         if (ret < 0)
             return ret;

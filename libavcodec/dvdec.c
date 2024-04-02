@@ -572,7 +572,7 @@ static int dvvideo_decode_frame(AVCodecContext *avctx, void *data,
     }
 
     s->frame            = frame.f;
-    frame.f->key_frame  = 1;
+    frame.f->flags |= AV_FRAME_FLAG_KEY;
     frame.f->pict_type  = AV_PICTURE_TYPE_I;
     avctx->pix_fmt      = s->sys->pix_fmt;
     avctx->framerate    = av_inv_q(s->sys->time_base);

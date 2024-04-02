@@ -2550,7 +2550,7 @@ static int jpeg2000_decode_frame(AVCodecContext *avctx, void *data,
     if ((ret = ff_thread_get_buffer(avctx, &frame, 0)) < 0)
         goto end;
     picture->pict_type = AV_PICTURE_TYPE_I;
-    picture->key_frame = 1;
+    picture->flags |= AV_FRAME_FLAG_KEY;
 
     if (ret = jpeg2000_read_bitstream_packets(s))
         goto end;

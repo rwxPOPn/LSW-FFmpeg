@@ -88,7 +88,10 @@ static void uavs3d_output_callback(uavs3d_io_frm_t *dec_frame) {
     }
 
     frm->pict_type = ff_avs3_image_type[dec_frame->type];
-    frm->key_frame = (frm->pict_type == AV_PICTURE_TYPE_I);
+        if (frm->pict_type == AV_PICTURE_TYPE_I)
+            frm->flags |= AV_FRAME_FLAG_KEY;
+        else
+            frm->flags &= ~AV_FRAME_FLAG_KEY;
 
     for (i = 0; i < 3; i++) {
         frm_out.width [i] = dec_frame->width[i];

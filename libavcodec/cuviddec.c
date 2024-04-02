@@ -592,7 +592,10 @@ static int cuvid_output_frame(AVCodecContext *avctx, AVFrame *frame)
             goto error;
         }
 
-        frame->key_frame = ctx->key_frame[parsed_frame.dispinfo.picture_index];
+        if (ctx->key_frame[parsed_frame.dispinfo.picture_index])
+            frame->flags |= AV_FRAME_FLAG_KEY;
+        else
+            frame->flags &= ~AV_FRAME_FLAG_KEY;
         frame->width = avctx->width;
         frame->height = avctx->height;
         if (avctx->pkt_timebase.num && avctx->pkt_timebase.den)

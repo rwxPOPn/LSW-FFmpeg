@@ -260,19 +260,19 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
 
     switch(compr){
     case -1:
-        frame->key_frame = 0;
+        frame->flags &= ~AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_P;
         if (c->prev->data[0])
             memcpy(frame->data[0], c->prev->data[0], frame->linesize[0] * avctx->height);
         else{ // Should happen only when first frame is 'NULL'
             memset(frame->data[0], 0, frame->linesize[0] * avctx->height);
-            frame->key_frame = 1;
+            frame->flags |= AV_FRAME_FLAG_KEY;
             frame->pict_type = AV_PICTURE_TYPE_I;
         }
         break;
     case 2:
     case 4:
-        frame->key_frame = 1;
+        frame->flags |= AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_I;
         for (j = 0; j < avctx->height; j++) {
                 memcpy(outptr, srcptr, avctx->width);
@@ -287,7 +287,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
             if (!(avctx->flags2 & AV_CODEC_FLAG2_SHOW_ALL))
                 return AVERROR_INVALIDDATA;
         }
-        frame->key_frame = 0;
+        frame->flags &= ~AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_P;
         for (j = 0; j < avctx->height; j++) {
             if(tmpptr){
@@ -302,7 +302,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
         break;
     case 12: // ScummVM coding
     case 13:
-        frame->key_frame = 0;
+        frame->flags &= ~AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_P;
         if (!c->prev->data[0]) {
             av_log(avctx, AV_LOG_ERROR, "Missing reference frame\n");

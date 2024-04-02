@@ -262,16 +262,16 @@ static int decode_slice(AVCodecContext *c, void *arg)
     for( si=0; fs != f->slice_context[si]; si ++)
         ;
 
-    if(f->fsrc && !p->key_frame)
+    if(f->fsrc && !(p->flags & AV_FRAME_FLAG_KEY))
         ff_thread_await_progress(&f->last_picture, si, 0);
 
-    if(f->fsrc && !p->key_frame) {
+    if(f->fsrc && !(p->flags & AV_FRAME_FLAG_KEY)) {
         FFV1Context *fssrc = f->fsrc->slice_context[si];
         FFV1Context *fsdst = f->slice_context[si];
         av_assert1(fsdst->plane_count == fssrc->plane_count);
         av_assert1(fsdst == fs);
 
-        if (!p->key_frame)
+        if (!(p->flags & AV_FRAME_FLAG_KEY))
             fsdst->slice_damaged |= fssrc->slice_damaged;
 
         for (i = 0; i < f->plane_count; i++) {
@@ -308,7 +308,7 @@ static int decode_slice(AVCodecContext *c, void *arg)
     }
     if ((ret = ff_ffv1_init_slice_state(f, fs)) < 0)
         return ret;
-    if (f->cur->key_frame || fs->slice_reset_contexts) {
+    if ((f->cur->flags & AV_FRAME_FLAG_KEY) || fs->slice_reset_contexts) {
         ff_ffv1_clear_slice_state(f, fs);
     } else if (fs->slice_damaged) {
         return AVERROR_INVALIDDATA;
@@ -881,7 +881,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
 
     p->pict_type = AV_PICTURE_TYPE_I; //FIXME I vs. P
     if (get_rac(c, &keystate)) {
-        p->key_frame    = 1;
+        p->flags |= AV_FRAME_FLAG_KEY;
         f->key_frame_ok = 0;
         if ((ret = read_header(f)) < 0)
             return ret;
@@ -892,7 +892,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
                    "Cannot decode non-keyframe without valid keyframe\n");
             return AVERROR_INVALIDDATA;
         }
-        p->key_frame = 0;
+        p->flags &= ~AV_FRAME_FLAG_KEY;
     }
 
     if ((ret = ff_thread_get_buffer(avctx, &f->picture, AV_GET_BUFFER_FLAG_REF)) < 0)
@@ -900,7 +900,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
 
     if (avctx->debug & FF_DEBUG_PICT_INFO)
         av_log(avctx, AV_LOG_DEBUG, "ver:%d keyframe:%d coder:%d ec:%d slices:%d bps:%d\n",
-               f->version, p->key_frame, f->ac, f->ec, f->slice_count, f->avctx->bits_per_raw_sample);
+               f->version, !!(p->flags & AV_FRAME_FLAG_KEY), f->ac, f->ec, f->slice_count, f->avctx->bits_per_raw_sample);
 
     ff_thread_finish_setup(avctx);
 

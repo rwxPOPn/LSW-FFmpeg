@@ -312,7 +312,7 @@ static int tgv_decode_frame(AVCodecContext *avctx,
 
     if (chunk_type == kVGT_TAG) {
         int y;
-        frame->key_frame = 1;
+        frame->flags |= AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_I;
 
         if (!s->frame_buffer &&
@@ -332,7 +332,7 @@ static int tgv_decode_frame(AVCodecContext *avctx,
             av_log(avctx, AV_LOG_WARNING, "inter frame without corresponding intra frame\n");
             return buf_size;
         }
-        frame->key_frame = 0;
+        frame->flags &= ~AV_FRAME_FLAG_KEY;
         frame->pict_type = AV_PICTURE_TYPE_P;
         if (tgv_decode_inter(s, frame, buf, buf_end) < 0) {
             av_log(avctx, AV_LOG_WARNING, "truncated inter frame\n");

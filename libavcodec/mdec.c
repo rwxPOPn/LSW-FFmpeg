@@ -179,7 +179,7 @@ static int decode_frame(AVCodecContext *avctx,
     if ((ret = ff_thread_get_buffer(avctx, &frame, 0)) < 0)
         return ret;
     frame.f->pict_type = AV_PICTURE_TYPE_I;
-    frame.f->key_frame = 1;
+    frame.f->flags |= AV_FRAME_FLAG_KEY;
 
     av_fast_padded_malloc(&a->bitstream_buffer, &a->bitstream_buffer_size, buf_size);
     if (!a->bitstream_buffer)

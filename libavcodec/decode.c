@@ -558,6 +558,9 @@ static int decode_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
                              avci->last_pkt_props, sizeof(*avci->last_pkt_props), NULL);
 
     if (!ret) {
+        if (avctx->codec_type != AVMEDIA_TYPE_VIDEO)
+            frame->flags |= AV_FRAME_FLAG_KEY;
+        frame->key_frame = !!(frame->flags & AV_FRAME_FLAG_KEY);
         frame->interlaced_frame = !!(frame->flags & AV_FRAME_FLAG_INTERLACED);
         frame->top_field_first =  !!(frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST);
         frame->best_effort_timestamp = guess_correct_pts(avctx,
