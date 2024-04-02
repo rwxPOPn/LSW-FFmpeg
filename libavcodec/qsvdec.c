@@ -25,7 +25,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include <mfx/mfxvideo.h>
+#include <mfxvideo.h>
 
 #include "libavutil/common.h"
 #include "libavutil/fifo.h"
@@ -38,6 +38,8 @@
 #include "libavutil/pixfmt.h"
 #include "libavutil/time.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/film_grain_params.h"
+#include "libavutil/mastering_display_metadata.h"
 
 #include "avcodec.h"
 #include "internal.h"
@@ -46,9 +48,26 @@
 #include "qsv.h"
 #include "qsv_internal.h"
 
+#if QSV_ONEVPL
+#include <mfxdispatcher.h>
+#else
+#define MFXUnload(a) do { } while(0)
+#endif
+
+static const AVRational mfx_tb = { 1, 90000 };
+
+#define PTS_TO_MFX_PTS(pts, pts_tb) ((pts) == AV_NOPTS_VALUE ? \
+    MFX_TIMESTAMP_UNKNOWN : pts_tb.num ? \
+    av_rescale_q(pts, pts_tb, mfx_tb) : pts)
+
+#define MFX_PTS_TO_PTS(mfx_pts, pts_tb) ((mfx_pts) == MFX_TIMESTAMP_UNKNOWN ? \
+    AV_NOPTS_VALUE : pts_tb.num ? \
+    av_rescale_q(mfx_pts, mfx_tb, pts_tb) : mfx_pts)
+
 typedef struct QSVContext {
     // the session used for decoding
     mfxSession session;
+    mfxVersion ver;
 
     // the session we allocated internally, in case the caller did not provide
     // one
@@ -70,7 +89,7 @@ typedef struct QSVContext {
     uint32_t fourcc;
     mfxFrameInfo frame_info;
     AVBufferPool *pool;
-
+    int suggest_pool_size;
     int initialized;
 
     // options set by the caller
@@ -89,7 +108,7 @@ static const AVCodecHWConfigInternal *const qsv_hw_configs[] = {
         .public = {
             .pix_fmt     = AV_PIX_FMT_QSV,
             .methods     = AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX |
-                           AV_CODEC_HW_CONFIG_METHOD_AD_HOC,
+                           AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX,
             .device_type = AV_HWDEVICE_TYPE_QSV,
         },
         .hwaccel = NULL,
@@ -102,7 +121,9 @@ static int qsv_get_continuous_buffer(AVCodecContext *avctx, AVFrame *frame,
 {
     int ret = 0;
 
-    ff_decode_frame_props(avctx, frame);
+    ret = ff_decode_frame_props(avctx, frame);
+    if (ret < 0)
+        return ret;
 
     frame->width       = avctx->width;
     frame->height      = avctx->height;
@@ -119,14 +140,17 @@ static int qsv_get_continuous_buffer(AVCodecContext *avctx, AVFrame *frame,
         return AVERROR(EINVAL);
     }
 
-    frame->linesize[1] = frame->linesize[0];
     frame->buf[0]      = av_buffer_pool_get(pool);
     if (!frame->buf[0])
         return AVERROR(ENOMEM);
 
     frame->data[0] = frame->buf[0]->data;
-    frame->data[1] = frame->data[0] +
-                            frame->linesize[0] * FFALIGN(avctx->height, 64);
+    if (avctx->pix_fmt == AV_PIX_FMT_NV12 ||
+        avctx->pix_fmt == AV_PIX_FMT_P010) {
+        frame->linesize[1] = frame->linesize[0];
+        frame->data[1] = frame->data[0] +
+            frame->linesize[0] * FFALIGN(avctx->height, 64);
+    }
 
     ret = ff_attach_decode_data(frame);
     if (ret < 0)
@@ -161,7 +185,11 @@ static int qsv_init_session(AVCodecContext *avctx, QSVContext *q, mfxSession ses
 
         ret = ff_qsv_init_session_frames(avctx, &q->internal_qs.session,
                                          &q->frames_ctx, q->load_plugins,
+#if QSV_HAVE_OPAQUE
                                          q->iopattern == MFX_IOPATTERN_OUT_OPAQUE_MEMORY,
+#else
+                                         0,
+#endif
                                          q->gpu_copy);
         if (ret < 0) {
             av_buffer_unref(&q->frames_ctx.hw_frames_ctx);
@@ -190,6 +218,23 @@ static int qsv_init_session(AVCodecContext *avctx, QSVContext *q, mfxSession ses
         }
 
         q->session = q->internal_qs.session;
+    }
+
+    if (MFXQueryVersion(q->session, &q->ver) != MFX_ERR_NONE) {
+        av_log(avctx, AV_LOG_ERROR, "Error querying the session version. \n");
+        q->session = NULL;
+
+        if (q->internal_qs.session) {
+            MFXClose(q->internal_qs.session);
+            q->internal_qs.session = NULL;
+        }
+
+        if (q->internal_qs.loader) {
+            MFXUnload(q->internal_qs.loader);
+            q->internal_qs.loader = NULL;
+        }
+
+        return AVERROR_EXTERNAL;
     }
 
     /* make sure the decoder is uninitialized */
@@ -238,15 +283,49 @@ static int qsv_decode_preinit(AVCodecContext *avctx, QSVContext *q, enum AVPixel
         q->nb_ext_buffers = user_ctx->nb_ext_buffers;
     }
 
+    if (avctx->hw_device_ctx && !avctx->hw_frames_ctx && ret == AV_PIX_FMT_QSV) {
+        AVHWFramesContext *hwframes_ctx;
+        AVQSVFramesContext *frames_hwctx;
+
+        avctx->hw_frames_ctx = av_hwframe_ctx_alloc(avctx->hw_device_ctx);
+
+        if (!avctx->hw_frames_ctx) {
+            av_log(avctx, AV_LOG_ERROR, "av_hwframe_ctx_alloc failed\n");
+            return AVERROR(ENOMEM);
+        }
+
+        hwframes_ctx = (AVHWFramesContext*)avctx->hw_frames_ctx->data;
+        frames_hwctx = hwframes_ctx->hwctx;
+        hwframes_ctx->width             = FFALIGN(avctx->coded_width,  32);
+        hwframes_ctx->height            = FFALIGN(avctx->coded_height, 32);
+        hwframes_ctx->format            = AV_PIX_FMT_QSV;
+        hwframes_ctx->sw_format         = avctx->sw_pix_fmt;
+        hwframes_ctx->initial_pool_size = q->suggest_pool_size + 16 + avctx->extra_hw_frames;
+        frames_hwctx->frame_type        = MFX_MEMTYPE_VIDEO_MEMORY_DECODER_TARGET;
+
+        ret = av_hwframe_ctx_init(avctx->hw_frames_ctx);
+
+        if (ret < 0) {
+            av_log(NULL, AV_LOG_ERROR, "Error initializing a QSV frame pool\n");
+            av_buffer_unref(&avctx->hw_frames_ctx);
+            return ret;
+        }
+    }
+
     if (avctx->hw_frames_ctx) {
         AVHWFramesContext    *frames_ctx = (AVHWFramesContext*)avctx->hw_frames_ctx->data;
         AVQSVFramesContext *frames_hwctx = frames_ctx->hwctx;
 
         if (!iopattern) {
+#if QSV_HAVE_OPAQUE
             if (frames_hwctx->frame_type & MFX_MEMTYPE_OPAQUE_FRAME)
                 iopattern = MFX_IOPATTERN_OUT_OPAQUE_MEMORY;
             else if (frames_hwctx->frame_type & MFX_MEMTYPE_VIDEO_MEMORY_DECODER_TARGET)
                 iopattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY;
+#else
+            if (frames_hwctx->frame_type & MFX_MEMTYPE_VIDEO_MEMORY_DECODER_TARGET)
+                iopattern = MFX_IOPATTERN_OUT_VIDEO_MEMORY;
+#endif
         }
     }
 
@@ -301,14 +380,15 @@ static int qsv_decode_header(AVCodecContext *avctx, QSVContext *q,
                              mfxVideoParam *param)
 {
     int ret;
-
+    mfxExtVideoSignalInfo video_signal_info = { 0 };
+    mfxExtBuffer *header_ext_params[1] = { (mfxExtBuffer *)&video_signal_info };
     mfxBitstream bs = { 0 };
 
     if (avpkt->size) {
         bs.Data       = avpkt->data;
         bs.DataLength = avpkt->size;
         bs.MaxLength  = bs.DataLength;
-        bs.TimeStamp  = avpkt->pts;
+        bs.TimeStamp  = PTS_TO_MFX_PTS(avpkt->pts, avctx->pkt_timebase);
         if (avctx->field_order == AV_FIELD_PROGRESSIVE)
             bs.DataFlag   |= MFX_BITSTREAM_COMPLETE_FRAME;
     } else
@@ -326,6 +406,12 @@ static int qsv_decode_header(AVCodecContext *avctx, QSVContext *q,
         return ret;
 
     param->mfx.CodecId = ret;
+    video_signal_info.Header.BufferId = MFX_EXTBUFF_VIDEO_SIGNAL_INFO;
+    video_signal_info.Header.BufferSz = sizeof(video_signal_info);
+    // The SDK doesn't support other ext buffers when calling MFXVideoDECODE_DecodeHeader,
+    // so do not append this buffer to the existent buffer array
+    param->ExtParam    = header_ext_params;
+    param->NumExtParam = 1;
     ret = MFXVideoDECODE_DecodeHeader(q->session, &bs, param);
     if (MFX_ERR_MORE_DATA == ret) {
        return AVERROR(EAGAIN);
@@ -333,6 +419,22 @@ static int qsv_decode_header(AVCodecContext *avctx, QSVContext *q,
     if (ret < 0)
         return ff_qsv_print_error(avctx, ret,
                 "Error decoding stream header");
+
+    avctx->color_range = video_signal_info.VideoFullRange ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+
+    if (video_signal_info.ColourDescriptionPresent) {
+        avctx->color_primaries = video_signal_info.ColourPrimaries;
+        avctx->color_trc = video_signal_info.TransferCharacteristics;
+        avctx->colorspace = video_signal_info.MatrixCoefficients;
+    }
+
+    param->ExtParam    = q->ext_buffers;
+    param->NumExtParam = q->nb_ext_buffers;
+
+#if QSV_VERSION_ATLEAST(1, 34)
+    if (QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 34) && avctx->codec_id == AV_CODEC_ID_AV1)
+        param->mfx.FilmGrain = (avctx->export_side_data & AV_CODEC_EXPORT_DATA_FILM_GRAIN) ? 0 : param->mfx.FilmGrain;
+#endif
 
     return 0;
 }
@@ -352,12 +454,14 @@ static int alloc_frame(AVCodecContext *avctx, QSVContext *q, QSVFrame *frame)
     if (frame->frame->format == AV_PIX_FMT_QSV) {
         frame->surface = *(mfxFrameSurface1*)frame->frame->data[3];
     } else {
-        frame->surface.Info = q->frame_info;
-
-        frame->surface.Data.PitchLow = frame->frame->linesize[0];
-        frame->surface.Data.Y        = frame->frame->data[0];
-        frame->surface.Data.UV       = frame->frame->data[1];
+        ret = ff_qsv_map_frame_to_surface(frame->frame, &frame->surface);
+        if (ret < 0) {
+            av_log(avctx, AV_LOG_ERROR, "map frame to surface failed.\n");
+            return ret;
+        }
     }
+
+    frame->surface.Info = q->frame_info;
 
     if (q->frames_ctx.mids) {
         ret = ff_qsv_find_surface_idx(&q->frames_ctx, frame);
@@ -366,11 +470,37 @@ static int alloc_frame(AVCodecContext *avctx, QSVContext *q, QSVFrame *frame)
 
         frame->surface.Data.MemId = &q->frames_ctx.mids[ret];
     }
-    frame->surface.Data.ExtParam    = &frame->ext_param;
-    frame->surface.Data.NumExtParam = 1;
-    frame->ext_param                = (mfxExtBuffer*)&frame->dec_info;
+
+    frame->surface.Data.ExtParam    = frame->ext_param;
+    frame->surface.Data.NumExtParam = 0;
+    frame->num_ext_params           = 0;
     frame->dec_info.Header.BufferId = MFX_EXTBUFF_DECODED_FRAME_INFO;
     frame->dec_info.Header.BufferSz = sizeof(frame->dec_info);
+    ff_qsv_frame_add_ext_param(avctx, frame, (mfxExtBuffer *)&frame->dec_info);
+#if QSV_VERSION_ATLEAST(1, 34)
+    if (QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 34) && avctx->codec_id == AV_CODEC_ID_AV1) {
+        frame->av1_film_grain_param.Header.BufferId = MFX_EXTBUFF_AV1_FILM_GRAIN_PARAM;
+        frame->av1_film_grain_param.Header.BufferSz = sizeof(frame->av1_film_grain_param);
+        frame->av1_film_grain_param.FilmGrainFlags = 0;
+        ff_qsv_frame_add_ext_param(avctx, frame, (mfxExtBuffer *)&frame->av1_film_grain_param);
+    }
+#endif
+
+#if QSV_VERSION_ATLEAST(1, 35)
+    if (QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 35) && avctx->codec_id == AV_CODEC_ID_HEVC) {
+        frame->mdcv.Header.BufferId = MFX_EXTBUFF_MASTERING_DISPLAY_COLOUR_VOLUME;
+        frame->mdcv.Header.BufferSz = sizeof(frame->mdcv);
+        // The data in mdcv is valid when this flag is 1
+        frame->mdcv.InsertPayloadToggle = 0;
+        ff_qsv_frame_add_ext_param(avctx, frame, (mfxExtBuffer *)&frame->mdcv);
+
+        frame->clli.Header.BufferId = MFX_EXTBUFF_CONTENT_LIGHT_LEVEL_INFO;
+        frame->clli.Header.BufferSz = sizeof(frame->clli);
+        // The data in clli is valid when this flag is 1
+        frame->clli.InsertPayloadToggle = 0;
+        ff_qsv_frame_add_ext_param(avctx, frame, (mfxExtBuffer *)&frame->clli);
+    }
+#endif
 
     frame->used = 1;
 
@@ -441,6 +571,120 @@ static QSVFrame *find_frame(QSVContext *q, mfxFrameSurface1 *surf)
     return NULL;
 }
 
+#if QSV_VERSION_ATLEAST(1, 34)
+static int qsv_export_film_grain(AVCodecContext *avctx, mfxExtAV1FilmGrainParam *ext_param, AVFrame *frame)
+{
+    AVFilmGrainParams *fgp;
+    AVFilmGrainAOMParams *aom;
+    int i;
+
+    if (!(ext_param->FilmGrainFlags & MFX_FILM_GRAIN_APPLY))
+        return 0;
+
+    fgp = av_film_grain_params_create_side_data(frame);
+
+    if (!fgp)
+        return AVERROR(ENOMEM);
+
+    fgp->type = AV_FILM_GRAIN_PARAMS_AV1;
+    fgp->seed = ext_param->GrainSeed;
+    aom = &fgp->codec.aom;
+
+    aom->chroma_scaling_from_luma = !!(ext_param->FilmGrainFlags & MFX_FILM_GRAIN_CHROMA_SCALING_FROM_LUMA);
+    aom->scaling_shift = ext_param->GrainScalingMinus8 + 8;
+    aom->ar_coeff_lag = ext_param->ArCoeffLag;
+    aom->ar_coeff_shift = ext_param->ArCoeffShiftMinus6 + 6;
+    aom->grain_scale_shift = ext_param->GrainScaleShift;
+    aom->overlap_flag = !!(ext_param->FilmGrainFlags & MFX_FILM_GRAIN_OVERLAP);
+    aom->limit_output_range = !!(ext_param->FilmGrainFlags & MFX_FILM_GRAIN_CLIP_TO_RESTRICTED_RANGE);
+
+    aom->num_y_points = ext_param->NumYPoints;
+
+    for (i = 0; i < aom->num_y_points; i++) {
+        aom->y_points[i][0] = ext_param->PointY[i].Value;
+        aom->y_points[i][1] = ext_param->PointY[i].Scaling;
+    }
+
+    aom->num_uv_points[0] = ext_param->NumCbPoints;
+
+    for (i = 0; i < aom->num_uv_points[0]; i++) {
+        aom->uv_points[0][i][0] = ext_param->PointCb[i].Value;
+        aom->uv_points[0][i][1] = ext_param->PointCb[i].Scaling;
+    }
+
+    aom->num_uv_points[1] = ext_param->NumCrPoints;
+
+    for (i = 0; i < aom->num_uv_points[1]; i++) {
+        aom->uv_points[1][i][0] = ext_param->PointCr[i].Value;
+        aom->uv_points[1][i][1] = ext_param->PointCr[i].Scaling;
+    }
+
+    for (i = 0; i < 24; i++)
+        aom->ar_coeffs_y[i] = ext_param->ArCoeffsYPlus128[i] - 128;
+
+    for (i = 0; i < 25; i++) {
+        aom->ar_coeffs_uv[0][i] = ext_param->ArCoeffsCbPlus128[i] - 128;
+        aom->ar_coeffs_uv[1][i] = ext_param->ArCoeffsCrPlus128[i] - 128;
+    }
+
+    aom->uv_mult[0] = ext_param->CbMult;
+    aom->uv_mult[1] = ext_param->CrMult;
+    aom->uv_mult_luma[0] = ext_param->CbLumaMult;
+    aom->uv_mult_luma[1] = ext_param->CrLumaMult;
+    aom->uv_offset[0] = ext_param->CbOffset;
+    aom->uv_offset[1] = ext_param->CrOffset;
+
+    return 0;
+}
+#endif
+
+#if QSV_VERSION_ATLEAST(1, 35)
+static int qsv_export_hdr_side_data(AVCodecContext *avctx, mfxExtMasteringDisplayColourVolume *mdcv,
+                                    mfxExtContentLightLevelInfo *clli, AVFrame *frame)
+{
+    // The SDK re-uses this flag for HDR SEI parsing
+    if (mdcv->InsertPayloadToggle) {
+        AVMasteringDisplayMetadata *mastering = av_mastering_display_metadata_create_side_data(frame);
+        const int mapping[3] = {2, 0, 1};
+        const int chroma_den = 50000;
+        const int luma_den = 10000;
+        int i;
+
+        if (!mastering)
+            return AVERROR(ENOMEM);
+
+        for (i = 0; i < 3; i++) {
+            const int j = mapping[i];
+            mastering->display_primaries[i][0] = av_make_q(mdcv->DisplayPrimariesX[j], chroma_den);
+            mastering->display_primaries[i][1] = av_make_q(mdcv->DisplayPrimariesY[j], chroma_den);
+        }
+
+        mastering->white_point[0] = av_make_q(mdcv->WhitePointX, chroma_den);
+        mastering->white_point[1] = av_make_q(mdcv->WhitePointY, chroma_den);
+
+        mastering->max_luminance = av_make_q(mdcv->MaxDisplayMasteringLuminance, luma_den);
+        mastering->min_luminance = av_make_q(mdcv->MinDisplayMasteringLuminance, luma_den);
+
+        mastering->has_luminance = 1;
+        mastering->has_primaries = 1;
+    }
+
+    // The SDK re-uses this flag for HDR SEI parsing
+    if (clli->InsertPayloadToggle) {
+        AVContentLightMetadata *light = av_content_light_metadata_create_side_data(frame);
+
+        if (!light)
+            return AVERROR(ENOMEM);
+
+        light->MaxCLL  = clli->MaxContentLightLevel;
+        light->MaxFALL = clli->MaxPicAverageLightLevel;
+    }
+
+    return 0;
+}
+
+#endif
+
 static int qsv_decode(AVCodecContext *avctx, QSVContext *q,
                       AVFrame *frame, int *got_frame,
                       const AVPacket *avpkt)
@@ -456,7 +700,7 @@ static int qsv_decode(AVCodecContext *avctx, QSVContext *q,
         bs.Data       = avpkt->data;
         bs.DataLength = avpkt->size;
         bs.MaxLength  = bs.DataLength;
-        bs.TimeStamp  = avpkt->pts;
+        bs.TimeStamp  = PTS_TO_MFX_PTS(avpkt->pts, avctx->pkt_timebase);
         if (avctx->field_order == AV_FIELD_PROGRESSIVE)
             bs.DataFlag   |= MFX_BITSTREAM_COMPLETE_FRAME;
     }
@@ -480,6 +724,13 @@ static int qsv_decode(AVCodecContext *avctx, QSVContext *q,
             av_usleep(500);
 
     } while (ret == MFX_WRN_DEVICE_BUSY || ret == MFX_ERR_MORE_SURFACE);
+
+    if (ret == MFX_ERR_INCOMPATIBLE_VIDEO_PARAM) {
+        q->reinit_flag = 1;
+        av_log(avctx, AV_LOG_DEBUG, "Video parameter change\n");
+        av_freep(&sync);
+        return 0;
+    }
 
     if (ret != MFX_ERR_NONE &&
         ret != MFX_ERR_MORE_DATA &&
@@ -544,12 +795,26 @@ static int qsv_decode(AVCodecContext *avctx, QSVContext *q,
 
         outsurf = &out_frame->surface;
 
-#if FF_API_PKT_PTS
-FF_DISABLE_DEPRECATION_WARNINGS
-        frame->pkt_pts = outsurf->Data.TimeStamp;
-FF_ENABLE_DEPRECATION_WARNINGS
+        frame->pts = MFX_PTS_TO_PTS(outsurf->Data.TimeStamp, avctx->pkt_timebase);
+#if QSV_VERSION_ATLEAST(1, 34)
+        if ((avctx->export_side_data & AV_CODEC_EXPORT_DATA_FILM_GRAIN) &&
+            QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 34) &&
+            avctx->codec_id == AV_CODEC_ID_AV1) {
+            ret = qsv_export_film_grain(avctx, &out_frame->av1_film_grain_param, frame);
+
+            if (ret < 0)
+                return ret;
+        }
 #endif
-        frame->pts = outsurf->Data.TimeStamp;
+
+#if QSV_VERSION_ATLEAST(1, 35)
+        if (QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 35) && avctx->codec_id == AV_CODEC_ID_HEVC) {
+            ret = qsv_export_hdr_side_data(avctx, &out_frame->mdcv, &out_frame->clli, frame);
+
+            if (ret < 0)
+                return ret;
+        }
+#endif
 
         frame->repeat_pict =
             outsurf->Info.PicStruct & MFX_PICSTRUCT_FRAME_TRIPLING ? 4 :
@@ -630,25 +895,39 @@ static int qsv_process_data(AVCodecContext *avctx, QSVContext *q,
     if (!avctx->coded_height)
         avctx->coded_height = 720;
 
-    ret = qsv_decode_header(avctx, q, pkt, pix_fmt, &param);
-
-    if (ret >= 0 && (q->orig_pix_fmt != ff_qsv_map_fourcc(param.mfx.FrameInfo.FourCC) ||
-        avctx->coded_width  != param.mfx.FrameInfo.Width ||
-        avctx->coded_height != param.mfx.FrameInfo.Height)) {
+    /* decode zero-size pkt to flush the buffered pkt before reinit */
+    if (q->reinit_flag) {
         AVPacket zero_pkt = {0};
+        ret = qsv_decode(avctx, q, frame, got_frame, &zero_pkt);
+        if (ret < 0 || *got_frame)
+            return ret;
+    }
 
-        if (q->buffered_count) {
-            q->reinit_flag = 1;
-            /* decode zero-size pkt to flush the buffered pkt before reinit */
-            q->buffered_count--;
-            return qsv_decode(avctx, q, frame, got_frame, &zero_pkt);
-        }
+    if (q->reinit_flag || !q->session || !q->initialized) {
+        mfxFrameAllocRequest request;
+        memset(&request, 0, sizeof(request));
+
         q->reinit_flag = 0;
+        ret = qsv_decode_header(avctx, q, pkt, pix_fmt, &param);
+        if (ret < 0) {
+            if (ret == AVERROR(EAGAIN))
+                av_log(avctx, AV_LOG_INFO, "More data is required to decode header\n");
+            else
+                av_log(avctx, AV_LOG_ERROR, "Error decoding header\n");
+            goto reinit_fail;
+        }
+        param.IOPattern = q->iopattern;
 
         q->orig_pix_fmt = avctx->pix_fmt = pix_fmt = ff_qsv_map_fourcc(param.mfx.FrameInfo.FourCC);
 
         avctx->coded_width  = param.mfx.FrameInfo.Width;
         avctx->coded_height = param.mfx.FrameInfo.Height;
+
+        ret = MFXVideoDECODE_QueryIOSurf(q->session, &param, &request);
+        if (ret < 0)
+            return ff_qsv_print_error(avctx, ret, "Error querying IO surface");
+
+        q->suggest_pool_size = request.NumFrameSuggested;
 
         ret = qsv_decode_preinit(avctx, q, pix_fmt, &param);
         if (ret < 0)
@@ -753,6 +1032,9 @@ static av_cold int qsv_decode_init(AVCodecContext *avctx)
         goto fail;
     }
 
+    if (!avctx->pkt_timebase.num)
+        av_log(avctx, AV_LOG_WARNING, "Invalid pkt_timebase, passing timestamps as-is.\n");
+
     return 0;
 fail:
     qsv_decode_close(avctx);
@@ -799,6 +1081,9 @@ static int qsv_decode_frame(AVCodecContext *avctx, void *data,
 
         ret = qsv_process_data(avctx, &s->qsv, frame, got_frame, &s->buffer_pkt);
         if (ret < 0){
+            if (ret == AVERROR(EAGAIN))
+                ret = 0;
+
             /* Drop buffer_pkt when failed to decode the packet. Otherwise,
                the decoder will keep decoding the failure packet. */
             av_packet_unref(&s->buffer_pkt);
@@ -849,6 +1134,8 @@ AVCodec ff_##x##_qsv_decoder = { \
     .priv_class     = &x##_qsv_class, \
     .pix_fmts       = (const enum AVPixelFormat[]){ AV_PIX_FMT_NV12, \
                                                     AV_PIX_FMT_P010, \
+                                                    AV_PIX_FMT_YUYV422, \
+                                                    AV_PIX_FMT_Y210, \
                                                     AV_PIX_FMT_QSV, \
                                                     AV_PIX_FMT_NONE }, \
     .hw_configs     = qsv_hw_configs, \
