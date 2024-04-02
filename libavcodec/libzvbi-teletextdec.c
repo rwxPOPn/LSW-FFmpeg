@@ -824,6 +824,7 @@ AVCodec ff_libzvbi_teletext_decoder = {
     .long_name = NULL_IF_CONFIG_SMALL("Libzvbi DVB teletext decoder"),
     .type      = AVMEDIA_TYPE_SUBTITLE,
     .id        = AV_CODEC_ID_DVB_TELETEXT,
+    .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
     .priv_data_size = sizeof(TeletextContext),
     .init      = teletext_init_decoder,
     .close     = teletext_close_decoder,

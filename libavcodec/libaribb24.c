@@ -385,6 +385,7 @@ AVCodec ff_libaribb24_decoder = {
     .long_name = NULL_IF_CONFIG_SMALL("libaribb24 ARIB STD-B24 caption decoder"),
     .type      = AVMEDIA_TYPE_SUBTITLE,
     .id        = AV_CODEC_ID_ARIB_CAPTION,
+    .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
     .priv_data_size = sizeof(Libaribb24Context),
     .init      = libaribb24_init,
     .close     = libaribb24_close,

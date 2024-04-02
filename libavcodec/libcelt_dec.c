@@ -132,6 +132,7 @@ AVCodec ff_libcelt_decoder = {
     .long_name      = NULL_IF_CONFIG_SMALL("Xiph CELT decoder using libcelt"),
     .type           = AVMEDIA_TYPE_AUDIO,
     .id             = AV_CODEC_ID_CELT,
+    .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
     .priv_data_size = sizeof(struct libcelt_context),
     .init           = libcelt_dec_init,
     .close          = libcelt_dec_close,

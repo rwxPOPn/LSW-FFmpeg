@@ -1144,6 +1144,7 @@ AVCodec ff_##x##_qsv_decoder = { \
                                                     AV_PIX_FMT_NONE }, \
     .hw_configs     = qsv_hw_configs, \
     .wrapper_name   = "qsv", \
+    .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE, \
 }; \
 
 #define DEFINE_QSV_DECODER(x, X, bsf_name) DEFINE_QSV_DECODER_WITH_OPTION(x, X, bsf_name, options)

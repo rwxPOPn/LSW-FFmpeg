@@ -135,6 +135,7 @@ AVCodec ff_libshine_encoder = {
     .long_name             = NULL_IF_CONFIG_SMALL("libshine MP3 (MPEG audio layer 3)"),
     .type                  = AVMEDIA_TYPE_AUDIO,
     .id                    = AV_CODEC_ID_MP3,
+    .caps_internal         = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
     .priv_data_size        = sizeof(SHINEContext),
     .init                  = libshine_encode_init,
     .encode2               = libshine_encode_frame,
