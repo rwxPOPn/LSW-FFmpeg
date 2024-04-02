@@ -596,14 +596,14 @@ static int dvvideo_decode_frame(AVCodecContext *avctx, void *data,
     /* Determine the codec's field order from the packet */
     if ( *vsc_pack == dv_video_control ) {
         if (avctx->height == 720) {
-            frame.f->interlaced_frame = 0;
-            frame.f->top_field_first = 0;
+            frame.f->flags &= ~AV_FRAME_FLAG_INTERLACED;
+            frame.f->flags &= ~AV_FRAME_FLAG_TOP_FIELD_FIRST;
         } else if (avctx->height == 1080) {
-            frame.f->interlaced_frame = 1;
-            frame.f->top_field_first = (vsc_pack[3] & 0x40) == 0x40;
+            frame.f->flags |= AV_FRAME_FLAG_INTERLACED;
+            frame.f->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST * ((vsc_pack[3] & 0x40) == 0x40);
         } else {
-            frame.f->interlaced_frame = (vsc_pack[3] & 0x10) == 0x10;
-            frame.f->top_field_first = !(vsc_pack[3] & 0x40);
+            frame.f->flags |= AV_FRAME_FLAG_INTERLACED * ((vsc_pack[3] & 0x10) == 0x10);
+            frame.f->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST * !(vsc_pack[3] & 0x40);
         }
     }
 

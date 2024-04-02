@@ -872,7 +872,8 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
 
     frame.f->key_frame = 1;
     frame.f->pict_type = AV_PICTURE_TYPE_I;
-    frame.f->interlaced_frame = !!c->interlaced;
+    if (c->interlaced)
+        frame.f->flags |= AV_FRAME_FLAG_INTERLACED;
 
     *got_frame = 1;
 

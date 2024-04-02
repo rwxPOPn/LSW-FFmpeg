@@ -730,7 +730,7 @@ static int decode_idat_chunk(AVCodecContext *avctx, PNGDecContext *s,
 
         p->pict_type        = AV_PICTURE_TYPE_I;
         p->key_frame        = 1;
-        p->interlaced_frame = !!s->interlace_type;
+        p->flags |= AV_FRAME_FLAG_INTERLACED * !!s->interlace_type;
 
         ff_thread_finish_setup(avctx);
 

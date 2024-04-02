@@ -297,7 +297,7 @@ static int dnxhd_decode_header(DNXHDContext *ctx, AVFrame *frame,
     ctx->mb_width  = (ctx->width + 15)>> 4;
     ctx->mb_height = AV_RB16(buf + 0x16c);
 
-    if ((ctx->height + 15) >> 4 == ctx->mb_height && frame->interlaced_frame)
+    if ((ctx->height + 15) >> 4 == ctx->mb_height && (frame->flags & AV_FRAME_FLAG_INTERLACED))
         ctx->height <<= 1;
 
     av_log(ctx->avctx, AV_LOG_VERBOSE, "%dx%d, 4:%s %d bits, MBAFF=%d ACT=%d\n",
@@ -315,7 +315,7 @@ static int dnxhd_decode_header(DNXHDContext *ctx, AVFrame *frame,
         }
         ctx->data_offset = 0x280;
     }
-    if ((ctx->mb_height << frame->interlaced_frame) > (ctx->height + 15) >> 4) {
+    if ((ctx->mb_height << !!(frame->flags & AV_FRAME_FLAG_INTERLACED)) > (ctx->height + 15) >> 4) {
         av_log(ctx->avctx, AV_LOG_ERROR,
                 "mb height too big: %d\n", ctx->mb_height);
         return AVERROR_INVALIDDATA;
@@ -529,7 +529,7 @@ static int dnxhd_decode_macroblock(const DNXHDContext *ctx, RowContext *row,
             return AVERROR_INVALIDDATA;
     }
 
-    if (frame->interlaced_frame) {
+    if (frame->flags & AV_FRAME_FLAG_INTERLACED) {
         dct_linesize_luma   <<= 1;
         dct_linesize_chroma <<= 1;
     }
@@ -538,7 +538,7 @@ static int dnxhd_decode_macroblock(const DNXHDContext *ctx, RowContext *row,
     dest_u = frame->data[1] + ((y * dct_linesize_chroma) << 4) + (x << (3 + shift1 + ctx->is_444));
     dest_v = frame->data[2] + ((y * dct_linesize_chroma) << 4) + (x << (3 + shift1 + ctx->is_444));
 
-    if (frame->interlaced_frame && ctx->cur_field) {
+    if ((frame->flags & AV_FRAME_FLAG_INTERLACED) && ctx->cur_field) {
         dest_y += frame->linesize[0];
         dest_u += frame->linesize[1];
         dest_v += frame->linesize[2];
@@ -660,7 +660,7 @@ decode_coding_unit:
     ctx->buf = buf + ctx->data_offset;
     avctx->execute2(avctx, dnxhd_decode_row, picture, NULL, ctx->mb_height);
 
-    if (first_field && picture->interlaced_frame) {
+    if (first_field && (picture->flags & AV_FRAME_FLAG_INTERLACED)) {
         buf      += ctx->cid_table->coding_unit_size;
         buf_size -= ctx->cid_table->coding_unit_size;
         first_field = 0;

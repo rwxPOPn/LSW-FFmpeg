@@ -244,8 +244,9 @@ static int raw_decode(AVCodecContext *avctx, void *data, int *got_frame,
     frame->pkt_duration = avctx->internal->last_pkt_props->duration;
 
     if (context->tff >= 0) {
-        frame->interlaced_frame = 1;
-        frame->top_field_first  = context->tff;
+        frame->flags |= AV_FRAME_FLAG_INTERLACED;
+        if (context->tff == 1)
+            frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
     }
 
     if ((res = av_image_check_size(avctx->width, avctx->height, 0, avctx)) < 0)
@@ -479,9 +480,9 @@ static int raw_decode(AVCodecContext *avctx, void *data, int *got_frame,
     }
 
     if (avctx->field_order > AV_FIELD_PROGRESSIVE) { /* we have interlaced material flagged in container */
-        frame->interlaced_frame = 1;
+        frame->flags |= AV_FRAME_FLAG_INTERLACED;
         if (avctx->field_order == AV_FIELD_TT || avctx->field_order == AV_FIELD_TB)
-            frame->top_field_first = 1;
+            frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
     }
 
     *got_frame = 1;

@@ -69,14 +69,16 @@ static int m101_decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
         return AVERROR_INVALIDDATA;
     }
 
-    frame->interlaced_frame = ((avctx->extradata[3*4] & 3) != 3);
-    if (frame->interlaced_frame)
-        frame->top_field_first = avctx->extradata[3*4] & 1;
+    if ((avctx->extradata[3*4] & 3) != 3) {
+        frame->flags |= AV_FRAME_FLAG_INTERLACED;
+        if (avctx->extradata[3*4] & 1)
+            frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
+    }
 
     for (y = 0; y < avctx->height; y++) {
         int src_y = y;
-        if (frame->interlaced_frame)
-            src_y = ((y&1)^frame->top_field_first) ? y/2 : (y/2 + avctx->height/2);
+        if (frame->flags & AV_FRAME_FLAG_INTERLACED)
+            src_y = ((y&1) ^ !!(frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST)) ? y/2 : (y/2 + avctx->height/2);
         if (bits == 8) {
             uint8_t *line = frame->data[0] + y*frame->linesize[0];
             memcpy(line, buf + src_y*stride, 2*avctx->width);

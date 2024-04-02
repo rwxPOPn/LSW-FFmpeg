@@ -558,6 +558,8 @@ static int decode_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame)
                              avci->last_pkt_props, sizeof(*avci->last_pkt_props), NULL);
 
     if (!ret) {
+        frame->interlaced_frame = !!(frame->flags & AV_FRAME_FLAG_INTERLACED);
+        frame->top_field_first =  !!(frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST);
         frame->best_effort_timestamp = guess_correct_pts(avctx,
                                                          frame->pts,
                                                          frame->pkt_dts);
