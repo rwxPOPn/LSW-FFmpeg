@@ -3797,7 +3797,7 @@ cpu="generic"
 intrinsics="none"
 
 # configurable options
-enable $PROGRAM_LIST
+disable $PROGRAM_LIST
 enable $DOCUMENT_LIST
 enable $EXAMPLE_LIST
 enable $(filter_out avresample $LIBRARY_LIST)
