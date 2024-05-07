@@ -317,7 +317,7 @@ static int64_t get_best_effort_duration(ConcatFile *file, AVFormatContext *avf)
     if (file->user_duration != AV_NOPTS_VALUE)
         return file->user_duration;
     if (file->outpoint != AV_NOPTS_VALUE)
-        return file->outpoint - file->file_inpoint;
+        return av_sat_sub64(file->outpoint, file->file_inpoint);
     if (avf->duration > 0)
         return avf->duration - (file->file_inpoint - file->file_start_time);
     if (file->next_dts != AV_NOPTS_VALUE)
@@ -501,6 +501,8 @@ static int concat_read_header(AVFormatContext *avf)
             cat->files[i].user_duration = cat->files[i].outpoint - cat->files[i].inpoint;
         }
         cat->files[i].duration = cat->files[i].user_duration;
+        if (time + (uint64_t)cat->files[i].user_duration > INT64_MAX)
+            return AVERROR_INVALIDDATA;
         time += cat->files[i].user_duration;
     }
     if (i == cat->nb_files) {
